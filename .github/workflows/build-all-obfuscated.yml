@@ -62,7 +62,7 @@ jobs:
           name: cloudflared-bin
           path: cf-*
 # ==========================================
-  # 任务 2: 编译 Xray (输出为 xy) [低内存优化版]
+  # 任务 2: 编译 Xray (输出为 xy) [修复 Panic 版]
   # ==========================================
   build-xray:
     name: Build Xray (xy)
@@ -88,15 +88,16 @@ jobs:
       - name: Compile
         working-directory: src
         env:
-          # 关键修改：设置 GOGC 降低内存占用，防止 143 OOM 错误
           GOGC: 20
         run: |
-          # 混淆编译 (amd64) -> 输出为 xy-amd64
-          # 修改：移除了 -tiny 参数以节省内存
+          # 关键修改：移除了 -tiny 参数
+          # Xray 极度依赖反射（Reflection），开启 -tiny 会导致结构体字段被混淆，
+          # 从而引发 template panic 或 json 解析失败。
+          # 去掉 -tiny 后，garble 依然会混淆函数名和路径，足够安全且稳定。
+          
           echo "Compiling amd64..."
           GOOS=linux GOARCH=amd64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-amd64 ./main
           
-          # 混淆编译 (arm64) -> 输出为 xy-arm64
           echo "Compiling arm64..."
           GOOS=linux GOARCH=arm64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-arm64 ./main
 
@@ -108,7 +109,6 @@ jobs:
         with:
           name: xray-bin
           path: xy-*
-
   # ==========================================
   # 任务 3: 编译 Nezha Agent (输出为 nz)
   # ==========================================
