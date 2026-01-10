@@ -1,0 +1,178 @@
+name: Custom Name Obfuscated Build (xy/cf/nz)
+
+on:
+  schedule:
+    - cron: '0 4 * * 0' # 每周日凌晨4点运行
+  workflow_dispatch:    # 支持手动触发
+
+jobs:
+  # ==========================================
+  # 任务 1: 编译 Cloudflared (输出为 cf)
+  # ==========================================
+  build-cloudflared:
+    name: Build Cloudflared (cf)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Latest Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install Tools
+        run: |
+          go install mvdan.cc/garble@latest
+          sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Clone Cloudflared
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/cloudflare/cloudflared.git src
+
+      - name: Mod Source & Compile
+        working-directory: src
+        run: |
+          # 源码特征修改
+          grep -rl "Cloudflare Tunnel client" . | xargs sed -i 's/Cloudflare Tunnel client/System Optimization Daemon/g'
+          
+          # 混淆编译 (amd64) -> 输出为 cf-amd64
+          echo "Compiling amd64..."
+          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../cf-amd64 ./cmd/cloudflared
+          
+          # 混淆编译 (arm64) -> 输出为 cf-arm64
+          echo "Compiling arm64..."
+          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../cf-arm64 ./cmd/cloudflared
+
+      - name: UPX Compression
+        run: upx --best --lzma cf-amd64 cf-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflared-bin
+          path: cf-*
+
+# ==========================================
+  # 任务 2: 编译 Xray (输出为 xy) [低内存优化版]
+  # ==========================================
+  build-xray:
+    name: Build Xray (xy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Latest Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install Tools
+        run: |
+          go install mvdan.cc/garble@latest
+          sudo apt-get install -y upx
+
+      - name: Clone Xray-core
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/XTLS/Xray-core.git src
+
+      - name: Compile
+        working-directory: src
+        env:
+          # 关键修改：设置 GOGC 降低内存占用，防止 143 OOM 错误
+          GOGC: 20
+        run: |
+          # 混淆编译 (amd64) -> 输出为 xy-amd64
+          # 修改：移除了 -tiny 参数以节省内存
+          echo "Compiling amd64..."
+          GOOS=linux GOARCH=amd64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-amd64 ./main
+          
+          # 混淆编译 (arm64) -> 输出为 xy-arm64
+          echo "Compiling arm64..."
+          GOOS=linux GOARCH=arm64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-arm64 ./main
+
+      - name: UPX Compression
+        run: upx --best --lzma xy-amd64 xy-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-bin
+          path: xy-*
+
+  # ==========================================
+  # 任务 3: 编译 Nezha Agent (输出为 nz)
+  # ==========================================
+  build-nezha:
+    name: Build Nezha Agent (nz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Latest Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install Tools
+        run: |
+          go install mvdan.cc/garble@latest
+          sudo apt-get install -y upx
+
+      - name: Clone Nezha Agent
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/nezhahq/agent/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/nezhahq/agent.git src
+
+      - name: Compile
+        working-directory: src
+        run: |
+          # 混淆编译 (amd64) -> 输出为 nz-amd64
+          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../nz-amd64 ./cmd/agent
+          # 混淆编译 (arm64) -> 输出为 nz-arm64
+          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../nz-arm64 ./cmd/agent
+
+      - name: UPX Compression
+        run: upx --best --lzma nz-amd64 nz-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nezha-bin
+          path: nz-*
+
+  # ==========================================
+  # 任务 4: 统一发布
+  # ==========================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-cloudflared, build-xray, build-nezha]
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare Files
+        run: |
+          mkdir -p release_files
+          mv ./artifacts/cloudflared-bin/* release_files/
+          mv ./artifacts/xray-bin/* release_files/
+          mv ./artifacts/nezha-bin/* release_files/
+          
+          echo "Files to release:"
+          ls -R release_files/
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest-obfuscated
+          name: "Custom Build (cf/xy/nz)"
+          files: release_files/*
+          draft: false
+          prerelease: false
+          allow_updates: true
