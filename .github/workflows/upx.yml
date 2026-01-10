@@ -1,127 +1,171 @@
-name: Advanced Obfuscated Build
+name: Ultimate Obfuscated Build (All-in-One)
 
 on:
   schedule:
-    - cron: '0 2 * * 0' # 每周日凌晨2点自动构建
+    - cron: '0 4 * * 0' # 每周日凌晨4点运行
   workflow_dispatch:    # 支持手动触发
 
-env:
-  # 伪装后的程序名
-  BINARY_NAME: "php-fpm-worker"
-  # 伪装后的版本号
-  FAKE_VERSION: "7.4.33"
-
 jobs:
-  build:
-    name: Build and Obfuscate
+  # ==========================================
+  # 任务 1: 编译混淆 Cloudflared (伪装名: bot)
+  # ==========================================
+  build-cloudflared:
+    name: Build Cloudflared
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout Your Repo
-        uses: actions/checkout@v4
-
-      - name: Setup Go Environment
+      - name: Setup Latest Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          check-latest: true
+          go-version: 'stable' # 关键修改：自动使用最新稳定版 (如 1.25+)
+          check-latest: true   # 强制检查最新版本，防止缓存旧版
 
-      - name: Install Obfuscation Tools (Garble & UPX)
+      - name: Install Tools
         run: |
-          echo "Installing Garble..."
           go install mvdan.cc/garble@latest
-          echo "Installing UPX..."
           sudo apt-get update && sudo apt-get install -y upx
 
-      - name: Clone Upstream Cloudflared
+      - name: Clone Cloudflared
         run: |
-          echo "Fetching latest cloudflared tag..."
-          LATEST_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r .tag_name)
-          echo "Latest version is $LATEST_TAG"
-          git clone --depth 1 --branch $LATEST_TAG https://github.com/cloudflare/cloudflared.git upstream_src
-          
-          # 记录真实版本号备用
-          echo "REAL_VERSION=$LATEST_TAG" >> $GITHUB_ENV
+          TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/cloudflare/cloudflared.git src
 
-      - name: 😈 Deep Clean & Rename (Source Modification)
-        working-directory: upstream_src
+      - name: Mod Source & Compile
+        working-directory: src
         run: |
-          echo "Starting source code modification..."
-          
-          # 1. 修改模块描述 (虽然Garble会做，但双重保险)
-          # 这里的sed比较危险，我们只修改用户可见的 Help 信息
-          
-          # 替换 Usage 里的 Cloudflare Tunnel client 为 System Optimization Daemon
+          # 源码特征修改
           grep -rl "Cloudflare Tunnel client" . | xargs sed -i 's/Cloudflare Tunnel client/System Optimization Daemon/g'
           
-          # 替换 help 里的 cloudflared 为 php-fpm-worker
-          grep -rl "cloudflared" cmd/ | xargs sed -i "s/cloudflared/${{ env.BINARY_NAME }}/g"
+          # 混淆编译 (amd64)
+          echo "Compiling amd64..."
+          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../bot-amd64 ./cmd/cloudflared
           
-          # 注意：为了保证连接成功，我们不修改 api.cloudflare.com 等核心网络库代码
-          # 字符串混淆工作交给 garble -literals 处理
+          # 混淆编译 (arm64)
+          echo "Compiling arm64..."
+          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../bot-arm64 ./cmd/cloudflared
+
+      - name: UPX Compression
+        run: upx --best --lzma bot-amd64 bot-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflared-bin
+          path: bot-*
+
+  # ==========================================
+  # 任务 2: 编译混淆 Xray (伪装名: web)
+  # ==========================================
+  build-xray:
+    name: Build Xray
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Latest Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable' # 关键修改
+          check-latest: true
+
+      - name: Install Tools
+        run: |
+          go install mvdan.cc/garble@latest
+          sudo apt-get install -y upx
+
+      - name: Clone Xray-core
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/XTLS/Xray-core.git src
+
+      - name: Compile
+        working-directory: src
+        run: |
+          # 混淆编译 (amd64)
+          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../web-amd64 ./main
+          # 混淆编译 (arm64)
+          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../web-arm64 ./main
+
+      - name: UPX Compression
+        run: upx --best --lzma web-amd64 web-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-bin
+          path: web-*
+
+  # ==========================================
+  # 任务 3: 编译混淆 Nezha Agent (伪装名: npm)
+  # ==========================================
+  build-nezha:
+    name: Build Nezha Agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Latest Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable' # 关键修改
+          check-latest: true
+
+      - name: Install Tools
+        run: |
+          go install mvdan.cc/garble@latest
+          sudo apt-get install -y upx
+
+      - name: Clone Nezha Agent
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/nezhahq/agent/releases/latest | jq -r .tag_name)
+          echo "Building version: $TAG"
+          git clone --depth 1 --branch $TAG https://github.com/nezhahq/agent.git src
+
+      - name: Compile
+        working-directory: src
+        run: |
+          # 混淆编译 (amd64)
+          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../npm-amd64 ./cmd/agent
+          # 混淆编译 (arm64)
+          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../npm-arm64 ./cmd/agent
+
+      - name: UPX Compression
+        run: upx --best --lzma npm-amd64 npm-arm64
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nezha-bin
+          path: npm-*
+
+  # ==========================================
+  # 任务 4: 统一发布 (Release)
+  # ==========================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-cloudflared, build-xray, build-nezha]
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare Files
+        run: |
+          mkdir -p release_files
+          mv ./artifacts/cloudflared-bin/* release_files/
+          mv ./artifacts/xray-bin/* release_files/
+          mv ./artifacts/nezha-bin/* release_files/
           
-          echo "Source code modified successfully."
+          echo "Files prepared:"
+          ls -R release_files/
 
-      - name: 🔨 Compile with Garble (AMD64)
-        working-directory: upstream_src
-        env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: 0
-        run: |
-          echo "Building for AMD64..."
-          # -tiny: 优化体积
-          # -literals: 混淆所有字符串（关键！）
-          # -trimpath: 移除路径特征
-          # -ldflags: 移除符号表，注入伪造版本号
-          
-          garble -tiny -literals build \
-            -trimpath \
-            -ldflags="-s -w -X 'main.Version=${{ env.FAKE_VERSION }}' -X 'main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
-            -o ../release_dist/amd64/bot \
-            ./cmd/cloudflared
-
-      - name: 🔨 Compile with Garble (ARM64)
-        working-directory: upstream_src
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: 0
-        run: |
-          echo "Building for ARM64..."
-          garble -tiny -literals build \
-            -trimpath \
-            -ldflags="-s -w -X 'main.Version=${{ env.FAKE_VERSION }}' -X 'main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
-            -o ../release_dist/arm64/bot \
-            ./cmd/cloudflared
-
-      - name: 📦 UPX Compression
-        run: |
-          echo "Compressing binaries..."
-          upx --best --lzma release_dist/amd64/bot
-          upx --best --lzma release_dist/arm64/bot
-
-      - name: 🚀 Verify & Generate Info
-        run: |
-          echo "Verifying builds..."
-          ls -lh release_dist/amd64/bot
-          ls -lh release_dist/arm64/bot
-          
-          # 生成一个简单的校验文件
-          cd release_dist
-          sha256sum amd64/bot arm64/bot > checksums.txt
-
-      - name: 🎉 Upload to Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: custom-build
-          name: "Custom Build (Based on ${{ env.REAL_VERSION }})"
-          files: |
-            release_dist/amd64/bot
-            release_dist/arm64/bot
-            release_dist/checksums.txt
+          tag_name: latest-obfuscated
+          name: "Obfuscated Tools Collection (Stable Go Build)"
+          files: release_files/*
           draft: false
           prerelease: false
           allow_updates: true
