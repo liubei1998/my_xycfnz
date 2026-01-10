@@ -6,8 +6,9 @@ on:
   workflow_dispatch:    # 支持手动触发
 
 jobs:
+
   # ==========================================
-  # 任务 1: 编译 Cloudflared (输出为 cf)
+  # 任务 1: 编译 Cloudflared (输出为 cf) [性能优化版]
   # ==========================================
   build-cloudflared:
     name: Build Cloudflared (cf)
@@ -32,17 +33,21 @@ jobs:
 
       - name: Mod Source & Compile
         working-directory: src
+        env:
+          # 降低内存占用，防止卡死
+          GOGC: 20
         run: |
           # 源码特征修改
           grep -rl "Cloudflare Tunnel client" . | xargs sed -i 's/Cloudflare Tunnel client/System Optimization Daemon/g'
           
-          # 混淆编译 (amd64) -> 输出为 cf-amd64
+          # 混淆编译 (amd64)
+          # 关键修改：去掉了 -tiny 参数
           echo "Compiling amd64..."
-          GOOS=linux GOARCH=amd64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../cf-amd64 ./cmd/cloudflared
+          GOOS=linux GOARCH=amd64 garble -literals build -trimpath -ldflags="-s -w" -o ../cf-amd64 ./cmd/cloudflared
           
-          # 混淆编译 (arm64) -> 输出为 cf-arm64
+          # 混淆编译 (arm64)
           echo "Compiling arm64..."
-          GOOS=linux GOARCH=arm64 garble -tiny -literals build -trimpath -ldflags="-s -w" -o ../cf-arm64 ./cmd/cloudflared
+          GOOS=linux GOARCH=arm64 garble -literals build -trimpath -ldflags="-s -w" -o ../cf-arm64 ./cmd/cloudflared
 
       - name: UPX Compression
         run: upx --best --lzma cf-amd64 cf-arm64
