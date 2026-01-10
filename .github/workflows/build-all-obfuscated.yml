@@ -7,8 +7,8 @@ on:
 
 jobs:
 
-  # ==========================================
-  # 任务 1: 编译 Cloudflared (输出为 cf) [性能优化版]
+# ==========================================
+  # 任务 1: 编译 Cloudflared (输出为 cf) [内存救援版]
   # ==========================================
   build-cloudflared:
     name: Build Cloudflared (cf)
@@ -34,20 +34,24 @@ jobs:
       - name: Mod Source & Compile
         working-directory: src
         env:
-          # 降低内存占用，防止卡死
+          # 依然保持激进的垃圾回收，防止内存溢出
           GOGC: 20
         run: |
-          # 源码特征修改
+          # 1. 源码特征强力清洗 (这是为了弥补去掉 -literals 的损失)
+          # 替换帮助信息
           grep -rl "Cloudflare Tunnel client" . | xargs sed -i 's/Cloudflare Tunnel client/System Optimization Daemon/g'
+          # 替换启动日志 (如果能找到)
+          grep -rl "Starting cloudflared" . | xargs sed -i 's/Starting cloudflared/Starting daemon service/g' || true
           
-          # 混淆编译 (amd64)
-          # 关键修改：去掉了 -tiny 参数
+          # 2. 编译 (关键修改：移除了 -literals)
+          # Cloudflared 依赖太大了，免费机器开 -literals 必死，必须去掉。
+          # garble 依然会混淆函数名和调用栈，配合 upx 足够安全。
+          
           echo "Compiling amd64..."
-          GOOS=linux GOARCH=amd64 garble -literals build -trimpath -ldflags="-s -w" -o ../cf-amd64 ./cmd/cloudflared
+          GOOS=linux GOARCH=amd64 garble build -trimpath -ldflags="-s -w" -o ../cf-amd64 ./cmd/cloudflared
           
-          # 混淆编译 (arm64)
           echo "Compiling arm64..."
-          GOOS=linux GOARCH=arm64 garble -literals build -trimpath -ldflags="-s -w" -o ../cf-arm64 ./cmd/cloudflared
+          GOOS=linux GOARCH=arm64 garble build -trimpath -ldflags="-s -w" -o ../cf-arm64 ./cmd/cloudflared
 
       - name: UPX Compression
         run: upx --best --lzma cf-amd64 cf-arm64
@@ -57,7 +61,6 @@ jobs:
         with:
           name: cloudflared-bin
           path: cf-*
-
 # ==========================================
   # 任务 2: 编译 Xray (输出为 xy) [低内存优化版]
   # ==========================================
