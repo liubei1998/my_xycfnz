@@ -1,149 +1,127 @@
-name: Auto upx and push
+name: Advanced Obfuscated Build
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # 每周日凌晨0点运行
-  workflow_dispatch:     
+    - cron: '0 2 * * 0' # 每周日凌晨2点自动构建
+  workflow_dispatch:    # 支持手动触发
+
+env:
+  # 伪装后的程序名
+  BINARY_NAME: "php-fpm-worker"
+  # 伪装后的版本号
+  FAKE_VERSION: "7.4.33"
 
 jobs:
   build:
+    name: Build and Obfuscate
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
+
     steps:
-      - name: check script
-        uses: actions/checkout@v3
+      - name: Checkout Your Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
         with:
-          fetch-depth: 0
-      
-      - name: install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq upx-ucl
+          go-version: '1.22'
+          check-latest: true
 
-      - name: Download and unzip the amd64 version
+      - name: Install Obfuscation Tools (Garble & UPX)
         run: |
-          rm -rf amd64
-          mkdir -p amd64
-          cd amd64
-          
-          # Nezha Agent amd64
-          wget https://github.com/nezhahq/agent/releases/latest/download/nezha-agent_linux_amd64.zip
-          unzip -o nezha-agent_linux_amd64.zip
-          chmod +x nezha-agent
-          
-          # Xray amd64
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -o Xray-linux-64.zip xray
-          chmod +x xray
-          
-          # Cloudflared amd64
-          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
-          chmod +x cloudflared
-          
-          # Sing-box amd64
-          sb_latest_version=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')
-          wget https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-${sb_latest_version}-linux-amd64.tar.gz
-          tar xzf sing-box-${sb_latest_version}-linux-amd64.tar.gz
-          mv sing-box-*/sing-box ./sing-box
-          chmod +x sing-box
-          
-          echo "amd64 files list："
-          ls -lh
-          cd ..
-      
-      - name: Download and unzip the arm64 version
-        run: |
-          rm -rf arm64
-          mkdir -p arm64
-          cd arm64
-          
-          # Nezha Agent arm64
-          wget https://github.com/nezhahq/agent/releases/latest/download/nezha-agent_linux_arm64.zip
-          unzip -o nezha-agent_linux_arm64.zip
-          chmod +x nezha-agent
-          
-          # Xray arm64
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip
-          unzip -o Xray-linux-arm64-v8a.zip xray
-          chmod +x xray
-          
-          # Cloudflared arm64
-          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -O cloudflared
-          chmod +x cloudflared
-          
-          # Sing-box arm64
-          sb_latest_version=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')
-          wget https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-${sb_latest_version}-linux-arm64.tar.gz
-          tar xzf sing-box-${sb_latest_version}-linux-arm64.tar.gz
-          mv sing-box-*/sing-box ./sing-box
-          chmod +x sing-box
-          
-          echo "amd64 files list："
-          ls -lh
-          cd ..
-      
-      - name: upx compress amd64
-        run: |
-          cd amd64
-          echo "compressing amd64 files..."
-          upx -9 nezha-agent -o v1
-          upx -9 xray -o web
-          upx -9 cloudflared -o bot
-          upx -9 sing-box -o sbx
-          cd ..
+          echo "Installing Garble..."
+          go install mvdan.cc/garble@latest
+          echo "Installing UPX..."
+          sudo apt-get update && sudo apt-get install -y upx
 
-      - name: upx compress arm64
+      - name: Clone Upstream Cloudflared
         run: |
-          cd arm64
-          echo "compressing arm64 files..."
-          upx -9 nezha-agent -o v1
-          upx -9 xray -o web
-          upx -9 cloudflared -o bot
-          upx -9 sing-box -o sbx
-          cd ..
-
-      - name: checking compressed files
-        run: |
-          echo "Checking compressed files size："
-          ls -lh amd64/v1 amd64/web amd64/bot amd64/sbx || echo "AMD64 文件不存在"
-          ls -lh arm64/v1 arm64/web arm64/bot arm64/sbx || echo "ARM64 文件不存在"
+          echo "Fetching latest cloudflared tag..."
+          LATEST_TAG=$(curl -s https://api.github.com/repos/cloudflare/cloudflared/releases/latest | jq -r .tag_name)
+          echo "Latest version is $LATEST_TAG"
+          git clone --depth 1 --branch $LATEST_TAG https://github.com/cloudflare/cloudflared.git upstream_src
           
-          for file in amd64/v1 amd64/web amd64/bot amd64/sbx arm64/v1 arm64/web arm64/bot arm64/sbx; do
-            if [ -f "$file" ]; then
-              size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
-              if [ "$size" -lt 5000000 ]; then  # 小于5MB
-                echo "Error：$file File size anomalies ($size bytes)"
-                exit 1
-              fi
-            fi
-          done
+          # 记录真实版本号备用
+          echo "REAL_VERSION=$LATEST_TAG" >> $GITHUB_ENV
 
-      - name: upload amd64 version
+      - name: 😈 Deep Clean & Rename (Source Modification)
+        working-directory: upstream_src
+        run: |
+          echo "Starting source code modification..."
+          
+          # 1. 修改模块描述 (虽然Garble会做，但双重保险)
+          # 这里的sed比较危险，我们只修改用户可见的 Help 信息
+          
+          # 替换 Usage 里的 Cloudflare Tunnel client 为 System Optimization Daemon
+          grep -rl "Cloudflare Tunnel client" . | xargs sed -i 's/Cloudflare Tunnel client/System Optimization Daemon/g'
+          
+          # 替换 help 里的 cloudflared 为 php-fpm-worker
+          grep -rl "cloudflared" cmd/ | xargs sed -i "s/cloudflared/${{ env.BINARY_NAME }}/g"
+          
+          # 注意：为了保证连接成功，我们不修改 api.cloudflare.com 等核心网络库代码
+          # 字符串混淆工作交给 garble -literals 处理
+          
+          echo "Source code modified successfully."
+
+      - name: 🔨 Compile with Garble (AMD64)
+        working-directory: upstream_src
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          echo "Building for AMD64..."
+          # -tiny: 优化体积
+          # -literals: 混淆所有字符串（关键！）
+          # -trimpath: 移除路径特征
+          # -ldflags: 移除符号表，注入伪造版本号
+          
+          garble -tiny -literals build \
+            -trimpath \
+            -ldflags="-s -w -X 'main.Version=${{ env.FAKE_VERSION }}' -X 'main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+            -o ../release_dist/amd64/bot \
+            ./cmd/cloudflared
+
+      - name: 🔨 Compile with Garble (ARM64)
+        working-directory: upstream_src
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: |
+          echo "Building for ARM64..."
+          garble -tiny -literals build \
+            -trimpath \
+            -ldflags="-s -w -X 'main.Version=${{ env.FAKE_VERSION }}' -X 'main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+            -o ../release_dist/arm64/bot \
+            ./cmd/cloudflared
+
+      - name: 📦 UPX Compression
+        run: |
+          echo "Compressing binaries..."
+          upx --best --lzma release_dist/amd64/bot
+          upx --best --lzma release_dist/arm64/bot
+
+      - name: 🚀 Verify & Generate Info
+        run: |
+          echo "Verifying builds..."
+          ls -lh release_dist/amd64/bot
+          ls -lh release_dist/arm64/bot
+          
+          # 生成一个简单的校验文件
+          cd release_dist
+          sha256sum amd64/bot arm64/bot > checksums.txt
+
+      - name: 🎉 Upload to Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: amd64
-          name: amd64
+          tag_name: custom-build
+          name: "Custom Build (Based on ${{ env.REAL_VERSION }})"
           files: |
-            amd64/v1
-            amd64/web
-            amd64/bot
-            amd64/sbx
-          token: ${{ secrets.GITHUB_TOKEN }}
-          draft: false
-          prerelease: false
-          allow_updates: true
-
-      - name: upload arm64 version
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: arm64
-          name: arm64
-          files: |
-            arm64/v1
-            arm64/web
-            arm64/bot
-            arm64/sbx
-          token: ${{ secrets.GITHUB_TOKEN }}
+            release_dist/amd64/bot
+            release_dist/arm64/bot
+            release_dist/checksums.txt
           draft: false
           prerelease: false
           allow_updates: true
