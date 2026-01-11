@@ -62,7 +62,7 @@ jobs:
           name: cloudflared-bin
           path: cf-*
 # ==========================================
-  # 任务 2: 编译 Xray (输出为 xy) [修复 Panic 版]
+  # 任务 2: 编译 Xray (输出为 xy) [稳定运行版]
   # ==========================================
   build-xray:
     name: Build Xray (xy)
@@ -75,9 +75,7 @@ jobs:
           check-latest: true
 
       - name: Install Tools
-        run: |
-          go install mvdan.cc/garble@latest
-          sudo apt-get install -y upx
+        run: sudo apt-get update && sudo apt-get install -y upx
 
       - name: Clone Xray-core
         run: |
@@ -87,19 +85,17 @@ jobs:
 
       - name: Compile
         working-directory: src
-        env:
-          GOGC: 20
         run: |
-          # 关键修改：移除了 -tiny 参数
-          # Xray 极度依赖反射（Reflection），开启 -tiny 会导致结构体字段被混淆，
-          # 从而引发 template panic 或 json 解析失败。
-          # 去掉 -tiny 后，garble 依然会混淆函数名和路径，足够安全且稳定。
-          
+          # ⚠️ 关键修改：放弃 garble，改回标准 go build
+          # 原因：Xray 的反射机制与混淆工具冲突，导致运行时 Panic。
+          # 补救：使用 -trimpath 移除路径特征，-s -w 移除调试信息，配合 UPX 加壳，
+          # 这已经是 Xray 能做到的最大程度“隐身”了。
+
           echo "Compiling amd64..."
-          GOOS=linux GOARCH=amd64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-amd64 ./main
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -buildid=" -o ../xy-amd64 ./main
           
           echo "Compiling arm64..."
-          GOOS=linux GOARCH=arm64 garble -literals build -trimpath -ldflags="-s -w" -o ../xy-arm64 ./main
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -buildid=" -o ../xy-arm64 ./main
 
       - name: UPX Compression
         run: upx --best --lzma xy-amd64 xy-arm64
